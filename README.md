@@ -52,13 +52,56 @@ Get-AdminAuditLogConfig |
 
 `UnifiedAuditLogIngestionEnabled` must be `True`.
 
-The account running the script needs one of the following:
+### Assign the Purview audit role group
 
-- **Audit Reader** — recommended least-privileged role
-- **Audit Manager**
-- **View-Only Audit Logs** in tenants using the classic permissions model
+For least-privileged access to search and export audit data in the Microsoft Purview portal, assign the account to **Audit Reader**:
 
-The account must also be allowed to run `Search-UnifiedAuditLog`.
+1. Sign in to the [Microsoft Purview portal](https://purview.microsoft.com).
+2. Go to **Settings** > **Roles and scopes** > **Role groups**.
+3. Select **Audit Reader**.
+4. Select **Edit** or **Manage members**.
+5. Add the account that will run the script.
+6. Save the role-group membership.
+
+The built-in audit role groups provide these capabilities:
+
+| Purview role group | Included audit role | Capability |
+|---|---|---|
+| **Audit Reader** | **View-Only Audit Logs** | Search and export audit records. Recommended for this script. |
+| **Audit Manager** | **View-Only Audit Logs** and **Audit Logs** | Search and export audit records and manage audit settings, including enabling or disabling auditing. |
+
+Use **Audit Manager** only when the account must manage audit configuration. The report itself only needs read access.
+
+### Assign the Exchange Online audit role
+
+This script calls the Exchange Online `Search-UnifiedAuditLog` cmdlet. Microsoft currently requires Exchange admin center permissions for audit cmdlets, even when the user already has a Purview audit role group.
+
+Assign the **View-Only Audit Logs** role through the Exchange admin center:
+
+1. Sign in to the [Exchange admin center](https://admin.exchange.microsoft.com).
+2. Go to **Roles** > **Admin roles**.
+3. Select an appropriate existing role group or create a dedicated role group for this report.
+4. In the role group's **Assigned** roles, add **View-Only Audit Logs**.
+5. Add the account that will run the script as a member.
+6. Save the role group.
+
+For least privilege, create a dedicated role group containing only **View-Only Audit Logs** instead of adding the account to a broad administrative group such as Organization Management.
+
+The administrator assigning Exchange role groups must have permission to manage roles, typically through the **Role Management** role. Permission changes can take time to propagate. After assignment, reconnect Exchange Online before testing.
+
+Verify that the account can execute the audit search:
+
+```powershell
+Connect-ExchangeOnline
+
+Search-UnifiedAuditLog `
+    -StartDate (Get-Date).AddDays(-1) `
+    -EndDate (Get-Date) `
+    -RecordType CopilotInteraction `
+    -ResultSize 1
+```
+
+The command is authorized if it runs without a permission or cmdlet-availability error. A zero-row result does not indicate a permissions failure; it can mean no matching activity occurred during the period.
 
 Audit Standard normally retains audit records for 180 days. Older data requires applicable Audit Premium licensing and retention policies.
 
@@ -69,7 +112,24 @@ The script uses delegated Microsoft Graph access with these scopes:
 - `User.Read.All`
 - `Organization.Read.All`
 
-Administrator consent is required. A Global Administrator is needed only to grant tenant-wide consent, enable audit collection when disabled, or assign the required administrative roles.
+Administrator consent is required for these delegated permissions. On first use, `Connect-MgGraph` requests the scopes interactively. If users aren't allowed to consent, an administrator must grant tenant-wide consent to the Microsoft Graph PowerShell enterprise application:
+
+1. Attempt the script or run the following once so the Microsoft Graph PowerShell enterprise application is provisioned and the requested scopes are recorded:
+
+   ```powershell
+   Connect-MgGraph -Scopes "User.Read.All","Organization.Read.All"
+   ```
+
+2. Sign in to the [Microsoft Entra admin center](https://entra.microsoft.com) using an account permitted to grant tenant-wide consent.
+3. Go to **Entra ID** > **Enterprise apps** > **All applications**.
+4. Select the Microsoft Graph PowerShell enterprise application used by `Connect-MgGraph`.
+5. Go to **Security** > **Permissions**.
+6. Review the requested delegated permissions.
+7. Select **Grant admin consent**.
+
+Microsoft documents **Cloud Application Administrator**, **Application Administrator**, **AI Administrator**, or **Privileged Role Administrator** as roles that can grant these delegated permissions, subject to tenant policy. Use the least-privileged role approved by your organization.
+
+These Graph permissions allow the script to read users, assigned licenses, and subscribed SKU information. They do not grant permission to modify users or licenses.
 
 ## Usage
 
@@ -220,9 +280,13 @@ Review `LicenseLookupStatus` and `LicenseLookupError` in the output. Confirm:
 ## Microsoft documentation
 
 - [Audit logs for Copilot and AI applications](https://learn.microsoft.com/purview/audit-copilot)
+- [Get started with Microsoft Purview auditing](https://learn.microsoft.com/purview/audit-get-started)
+- [Permissions in the Microsoft Purview portal](https://learn.microsoft.com/purview/purview-permissions)
+- [Manage role groups in Exchange Online](https://learn.microsoft.com/exchange/permissions-exo/role-groups)
 - [Search-UnifiedAuditLog](https://learn.microsoft.com/powershell/module/exchangepowershell/search-unifiedauditlog)
 - [Office 365 Management Activity API](https://learn.microsoft.com/office/office-365-management-api/office-365-management-activity-api-reference)
 - [List subscribed SKUs in Microsoft Graph](https://learn.microsoft.com/graph/api/subscribedsku-list)
+- [Grant tenant-wide admin consent](https://learn.microsoft.com/entra/identity/enterprise-apps/grant-admin-consent)
 - [Microsoft Copilot Credits report](https://learn.microsoft.com/microsoft-365/admin/activity-reports/microsoft-365-copilot-credits)
 
 ## Security and privacy
