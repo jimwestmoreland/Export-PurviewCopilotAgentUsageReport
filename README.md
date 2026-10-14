@@ -38,98 +38,20 @@ Install-Module Microsoft.Graph.Users -Scope CurrentUser
 Install-Module Microsoft.Graph.Identity.DirectoryManagement -Scope CurrentUser
 ```
 
-### Microsoft Purview
+### Required configuration and access
 
-Microsoft Purview Audit must be enabled for the tenant. Audit Standard is enabled by default for supported Microsoft 365 subscriptions.
+Microsoft Purview Audit must be enabled for the tenant. Use `-CheckPurviewAuditEnabled` to have the script verify this setting. Audit Standard normally retains records for 180 days; older data requires applicable Audit Premium licensing and retention policies.
 
-You can ask the script to verify the setting by using `-CheckPurviewAuditEnabled`, or check it manually:
+Assign the following least-privileged access to the account that runs the script:
 
-```powershell
-Connect-ExchangeOnline
-Get-AdminAuditLogConfig |
-    Format-List UnifiedAuditLogIngestionEnabled
-```
-
-`UnifiedAuditLogIngestionEnabled` must be `True`.
-
-### Assign the Purview audit role group
-
-For least-privileged access to search and export audit data in the Microsoft Purview portal, assign the account to **Audit Reader**:
-
-1. Sign in to the [Microsoft Purview portal](https://purview.microsoft.com).
-2. Go to **Settings** > **Roles and scopes** > **Role groups**.
-3. Select **Audit Reader**.
-4. Select **Edit** or **Manage members**.
-5. Add the account that will run the script.
-6. Save the role-group membership.
-
-The built-in audit role groups provide these capabilities:
-
-| Purview role group | Included audit role | Capability |
+| Service | Role or permission | Why it is required |
 |---|---|---|
-| **Audit Reader** | **View-Only Audit Logs** | Search and export audit records. Recommended for this script. |
-| **Audit Manager** | **View-Only Audit Logs** and **Audit Logs** | Search and export audit records and manage audit settings, including enabling or disabling auditing. |
+| Microsoft Purview | **Audit Reader** role group | Allows read-only access to search and export audit records. |
+| Exchange Online | **View-Only Audit Logs** role | Allows the script to run `Search-UnifiedAuditLog`. |
+| Microsoft Graph | `User.Read.All` delegated permission | Reads each user's account status and assigned licenses. |
+| Microsoft Graph | `Organization.Read.All` delegated permission | Reads the tenant ID and subscribed license SKUs. |
 
-Use **Audit Manager** only when the account must manage audit configuration. The report itself only needs read access.
-
-### Assign the Exchange Online audit role
-
-This script calls the Exchange Online `Search-UnifiedAuditLog` cmdlet. Microsoft currently requires Exchange admin center permissions for audit cmdlets, even when the user already has a Purview audit role group.
-
-Assign the **View-Only Audit Logs** role through the Exchange admin center:
-
-1. Sign in to the [Exchange admin center](https://admin.exchange.microsoft.com).
-2. Go to **Roles** > **Admin roles**.
-3. Select an appropriate existing role group or create a dedicated role group for this report.
-4. In the role group's **Assigned** roles, add **View-Only Audit Logs**.
-5. Add the account that will run the script as a member.
-6. Save the role group.
-
-For least privilege, create a dedicated role group containing only **View-Only Audit Logs** instead of adding the account to a broad administrative group such as Organization Management.
-
-The administrator assigning Exchange role groups must have permission to manage roles, typically through the **Role Management** role. Permission changes can take time to propagate. After assignment, reconnect Exchange Online before testing.
-
-Verify that the account can execute the audit search:
-
-```powershell
-Connect-ExchangeOnline
-
-Search-UnifiedAuditLog `
-    -StartDate (Get-Date).AddDays(-1) `
-    -EndDate (Get-Date) `
-    -RecordType CopilotInteraction `
-    -ResultSize 1
-```
-
-The command is authorized if it runs without a permission or cmdlet-availability error. A zero-row result does not indicate a permissions failure; it can mean no matching activity occurred during the period.
-
-Audit Standard normally retains audit records for 180 days. Older data requires applicable Audit Premium licensing and retention policies.
-
-### Microsoft Graph
-
-The script uses delegated Microsoft Graph access with these scopes:
-
-- `User.Read.All`
-- `Organization.Read.All`
-
-Administrator consent is required for these delegated permissions. On first use, `Connect-MgGraph` requests the scopes interactively. If users aren't allowed to consent, an administrator must grant tenant-wide consent to the Microsoft Graph PowerShell enterprise application:
-
-1. Attempt the script or run the following once so the Microsoft Graph PowerShell enterprise application is provisioned and the requested scopes are recorded:
-
-   ```powershell
-   Connect-MgGraph -Scopes "User.Read.All","Organization.Read.All"
-   ```
-
-2. Sign in to the [Microsoft Entra admin center](https://entra.microsoft.com) using an account permitted to grant tenant-wide consent.
-3. Go to **Entra ID** > **Enterprise apps** > **All applications**.
-4. Select the Microsoft Graph PowerShell enterprise application used by `Connect-MgGraph`.
-5. Go to **Security** > **Permissions**.
-6. Review the requested delegated permissions.
-7. Select **Grant admin consent**.
-
-Microsoft documents **Cloud Application Administrator**, **Application Administrator**, **AI Administrator**, or **Privileged Role Administrator** as roles that can grant these delegated permissions, subject to tenant policy. Use the least-privileged role approved by your organization.
-
-These Graph permissions allow the script to read users, assigned licenses, and subscribed SKU information. They do not grant permission to modify users or licenses.
+Administrator consent is required for the Microsoft Graph delegated permissions. The script does not modify users, licenses, or audit settings.
 
 ## Usage
 
