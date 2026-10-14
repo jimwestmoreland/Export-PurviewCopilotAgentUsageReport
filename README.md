@@ -6,7 +6,7 @@ The script runs directly against Microsoft services. It does not require a Micro
 
 ## What it does
 
-- Searches Microsoft Purview for `CopilotInteraction` audit records.
+- Searches Microsoft Purview for `CopilotInteraction` and `ConnectedAIAppInteraction` audit records.
 - Filters interactions by a stable agent ID or exact agent name.
 - Aggregates usage by user.
 - Reports interaction totals and first and last activity timestamps.
@@ -45,11 +45,11 @@ Microsoft Purview Audit must be enabled for the tenant. Use `-CheckPurviewAuditE
 Assign the following least-privileged access to the account that runs the script:
 
 | Service | Role or permission | Why it is required |
-|---|---|---|
+| --- | --- | --- |
 | Microsoft Purview | **Audit Reader** role group | Allows read-only access to search and export audit records. |
 | Exchange Online | **View-Only Audit Logs** role | Allows the script to run `Search-UnifiedAuditLog`. |
 | Microsoft Graph | `User.Read.All` delegated permission | Reads each user's account status and assigned licenses. |
-| Microsoft Graph | `Organization.Read.All` delegated permission | Reads the tenant ID and subscribed license SKUs. |
+| Microsoft Graph | `LicenseAssignment.Read.All` delegated permission | Reads the tenant's subscribed license SKUs. |
 
 Administrator consent is required for the Microsoft Graph delegated permissions. The script does not modify users, licenses, or audit settings.
 
@@ -87,7 +87,7 @@ When `-AgentId` is supplied, it is the match key. `-AgentName` is used as a huma
 ## Parameters
 
 | Parameter | Required | Description |
-|---|---:|---|
+| --- | ---: | --- |
 | `AgentName` | Yes | Exact agent name. Matching is case-insensitive when no agent ID is supplied. |
 | `AgentId` | No | Exact, stable agent ID. Becomes the match key when supplied. |
 | `StartDate` | Yes | First UTC calendar date to search, inclusive. |
@@ -104,7 +104,7 @@ When `-AgentId` is supplied, it is the match key. `-AgentName` is used as a huma
 The script writes one row per unique user who interacted with the selected agent.
 
 | Column | Description |
-|---|---|
+| --- | --- |
 | `ReportStartDateUtc` | First date searched. |
 | `ReportEndDateUtc` | Last date searched. |
 | `ReportPeriodDays` | Number of inclusive calendar days searched. |

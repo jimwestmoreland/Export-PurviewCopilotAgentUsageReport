@@ -6,9 +6,9 @@ whether they currently have a Microsoft 365 Copilot license assigned.
 .DESCRIPTION
 This script queries Microsoft Purview audit data directly by using the
 Search-UnifiedAuditLog Exchange Online PowerShell cmdlet. It retrieves
-CopilotInteraction records for an inclusive UTC calendar-date range, filters by
-agent ID when provided or otherwise by exact agent name, and aggregates the
-matching interactions by user.
+CopilotInteraction and ConnectedAIAppInteraction records for an inclusive UTC
+calendar-date range, filters by agent ID when provided or otherwise by exact
+agent name, and aggregates the matching interactions by user.
 
 For every unique user, the script uses Microsoft Graph to check the user's current
 Microsoft 365 Copilot license assignment. Results are written to a timestamped CSV
@@ -36,10 +36,10 @@ No Microsoft 365 admin center report export is required.
    In tenants using the classic permissions model, the equivalent role is
    View-Only Audit Logs. Role changes can take time to become effective.
 
-3. CopilotInteraction records must exist within the tenant's retention window.
-   Audit (Standard) normally retains audit records for 180 days. Audit (Premium)
-   can provide longer retention when the required licenses and retention policies
-   are configured.
+3. Copilot or connected AI application interaction records must exist within the
+   tenant's retention window. Audit (Standard) normally retains audit records for
+   180 days. Audit (Premium) can provide longer retention when the required
+   licenses and retention policies are configured.
 
 4. The current Purview Copilot audit schema documents AgentId and AgentName, but
    these fields might not be populated for every historical event, agent type, or
@@ -57,7 +57,7 @@ No Microsoft 365 admin center report export is required.
 4. Interactive sign-in is required for Exchange Online/Purview and Microsoft Graph.
 5. Admin consent is required for these delegated Microsoft Graph scopes:
    - User.Read.All
-   - Organization.Read.All
+   - LicenseAssignment.Read.All
 
 .ROLES AND PERMISSIONS REQUIRED
 - Purview: Audit Reader is the recommended least-privileged role. Audit Manager or
@@ -66,9 +66,9 @@ No Microsoft 365 admin center report export is required.
   Search-UnifiedAuditLog.
 - Microsoft Graph delegated permissions:
   - User.Read.All to read users and assigned licenses.
-  - Organization.Read.All to read the tenant's subscribed SKUs.
-- A Global Administrator is needed only to grant tenant-wide consent, enable audit
-  collection when disabled, or assign the required administrative roles.
+  - LicenseAssignment.Read.All to read the tenant's subscribed SKUs.
+- An appropriately privileged administrator is needed only to grant tenant-wide
+  consent, enable audit collection, or assign the required administrative roles.
 
 .PARAMETER AgentName
 Exact agent name to report. Matching is case-insensitive.
@@ -264,40 +264,42 @@ function Get-PurviewCopilotAuditRecords {
             $sliceEnd = $RangeEndExclusiveUtc
         }
 
-        $sessionId = "CopilotAgentUsage-$([guid]::NewGuid())"
-        $sliceCount = 0
-
         Write-Verbose "Searching Purview from $($sliceStart.ToString('o')) through $($sliceEnd.ToString('o'))."
 
-        while ($true) {
-            $searchParameters = @{
-                StartDate      = $sliceStart
-                EndDate        = $sliceEnd
-                RecordType     = 'CopilotInteraction'
-                SessionId      = $sessionId
-                SessionCommand = 'ReturnLargeSet'
-                ResultSize     = 5000
-                Formatted      = $true
-            }
-            if ($HighCompleteness) {
-                $searchParameters.HighCompleteness = $true
-            }
+        foreach ($recordType in @('CopilotInteraction', 'ConnectedAIAppInteraction')) {
+            $sessionId = "CopilotAgentUsage-$([guid]::NewGuid())"
+            $sliceCount = 0
 
-            $page = @(
-                Search-UnifiedAuditLog @searchParameters
-            )
+            while ($true) {
+                $searchParameters = @{
+                    StartDate      = $sliceStart
+                    EndDate        = $sliceEnd
+                    RecordType     = $recordType
+                    SessionId      = $sessionId
+                    SessionCommand = 'ReturnLargeSet'
+                    ResultSize     = 5000
+                    Formatted      = $true
+                }
+                if ($HighCompleteness) {
+                    $searchParameters.HighCompleteness = $true
+                }
 
-            if ($page.Count -eq 0) {
-                break
-            }
+                $page = @(
+                    Search-UnifiedAuditLog @searchParameters
+                )
 
-            foreach ($record in $page) {
-                Write-Output $record
-            }
-            $sliceCount += $page.Count
+                if ($page.Count -eq 0) {
+                    break
+                }
 
-            if ($sliceCount -ge 50000) {
-                throw "The Purview search interval beginning $($sliceStart.ToString('o')) reached the 50,000-record Search-UnifiedAuditLog session limit. Results could be truncated. Rerun with -AuditSliceMinutes set to a value smaller than $SliceMinutes."
+                foreach ($record in $page) {
+                    Write-Output $record
+                }
+                $sliceCount += $page.Count
+
+                if ($sliceCount -ge 50000) {
+                    throw "The Purview $recordType search interval beginning $($sliceStart.ToString('o')) reached the 50,000-record Search-UnifiedAuditLog session limit. Results could be truncated. Rerun with -AuditSliceMinutes set to a value smaller than $SliceMinutes."
+                }
             }
         }
 
@@ -382,9 +384,12 @@ $selectedAgentIds = [Collections.Generic.HashSet[string]]::new([StringComparer]:
 $selectedAgentNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $auditOrganizationIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $userAggregates = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+$matchedAuditRecordCount = 0
 $matchingEventCount = 0
 $invalidAuditRecordCount = 0
 $missingAgentIdentityCount = 0
+$missingUserIdentifierCount = 0
+$invalidTimestampCount = 0
 
 Get-PurviewCopilotAuditRecords `
     -RangeStartUtc $startDateUtc `
@@ -433,6 +438,7 @@ ForEach-Object {
     if (-not $matchingRecordIds.Add($recordId)) {
         return
     }
+    $matchedAuditRecordCount++
 
     $eventUserId = [string](Get-CopilotAuditValue -AuditData $auditData -Names @('UserId', 'UserID'))
     if ([string]::IsNullOrWhiteSpace($eventUserId)) {
@@ -442,6 +448,7 @@ ForEach-Object {
             Select-Object -First 1
     }
     if ([string]::IsNullOrWhiteSpace($eventUserId)) {
+        $missingUserIdentifierCount++
         Write-Warning "Purview audit record '$recordId' matched the Copilot schema but did not contain a user identifier."
         return
     }
@@ -460,6 +467,7 @@ ForEach-Object {
             [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal,
             [ref]$creationDateUtc
         )) {
+            $invalidTimestampCount++
             Write-Warning "Purview audit record '$recordId' did not contain a valid creation timestamp and was excluded."
             return
         }
@@ -512,12 +520,15 @@ if ($invalidAuditRecordCount -gt 0) {
     Write-Warning "$invalidAuditRecordCount Purview record(s) contained invalid JSON and were excluded."
 }
 if ($missingAgentIdentityCount -gt 0) {
-    Write-Warning "$missingAgentIdentityCount CopilotInteraction record(s) did not contain AgentId or AgentName and could not be attributed to an agent."
+    Write-Warning "$missingAgentIdentityCount Copilot or connected AI application record(s) did not contain AgentId or AgentName and could not be attributed to an agent."
 }
 
-if ($matchingEventCount -eq 0) {
+if ($matchedAuditRecordCount -eq 0) {
     $matchDescription = if ($AgentId) { "agent ID '$AgentId'" } else { "agent name '$AgentName'" }
-    throw "No Purview CopilotInteraction records matched $matchDescription between $($startDateUtc.ToString('yyyy-MM-dd')) and $($endDateUtc.ToString('yyyy-MM-dd')) UTC. Observed agents (up to 50): $(@($observedAgents) -join ', '). Records without agent identity: $missingAgentIdentityCount."
+    throw "No Purview Copilot or connected AI application records matched $matchDescription between $($startDateUtc.ToString('yyyy-MM-dd')) and $($endDateUtc.ToString('yyyy-MM-dd')) UTC. Observed agents (up to 50): $(@($observedAgents) -join ', '). Records without agent identity: $missingAgentIdentityCount."
+}
+if ($matchingEventCount -eq 0) {
+    throw "$matchedAuditRecordCount Purview record(s) matched the requested agent, but none contained both a usable user identifier and creation timestamp. Missing user identifiers: $missingUserIdentifierCount. Invalid timestamps: $invalidTimestampCount."
 }
 
 if ([string]::IsNullOrWhiteSpace($AgentId) -and $selectedAgentIds.Count -gt 1) {
@@ -527,7 +538,7 @@ if ($auditOrganizationIds.Count -gt 1) {
     throw "Matching Purview records contained more than one OrganizationId: $(@($auditOrganizationIds) -join ', '). The tenant cannot be determined safely."
 }
 
-$requiredScopes = @('User.Read.All', 'Organization.Read.All')
+$requiredScopes = @('User.Read.All', 'LicenseAssignment.Read.All')
 $graphContext = Get-MgContext
 $hasRequiredScopes = $null -ne $graphContext -and @(
     $requiredScopes | Where-Object { $_ -notin $graphContext.Scopes }
@@ -575,6 +586,12 @@ if ($copilotSkus.Count -eq 0) {
 
 $selectedAgentIdValues = @($selectedAgentIds | Sort-Object)
 $selectedAgentNameValues = @($selectedAgentNames | Sort-Object)
+$reportAgentName = if ($selectedAgentNameValues.Count -gt 0) {
+    $selectedAgentNameValues -join ';'
+}
+else {
+    $AgentName
+}
 $results = @(
     foreach ($userAggregate in $userAggregates.Values) {
         $userId = [string]$userAggregate.UserId
@@ -595,7 +612,7 @@ $results = @(
                 ReportStartDateUtc             = $startDateUtc.ToString('yyyy-MM-dd')
                 ReportEndDateUtc               = $endDateUtc.ToString('yyyy-MM-dd')
                 ReportPeriodDays               = $reportPeriodDays
-                AgentName                      = ($selectedAgentNameValues -join ';')
+                AgentName                      = $reportAgentName
                 AgentIds                       = ($selectedAgentIdValues -join ';')
                 AgentVersions                  = ($agentVersions -join ';')
                 UserPrincipalName              = $graphUser.UserPrincipalName
@@ -618,7 +635,7 @@ $results = @(
                 ReportStartDateUtc             = $startDateUtc.ToString('yyyy-MM-dd')
                 ReportEndDateUtc               = $endDateUtc.ToString('yyyy-MM-dd')
                 ReportPeriodDays               = $reportPeriodDays
-                AgentName                      = ($selectedAgentNameValues -join ';')
+                AgentName                      = $reportAgentName
                 AgentIds                       = ($selectedAgentIdValues -join ';')
                 AgentVersions                  = ($agentVersions -join ';')
                 UserPrincipalName              = $userId
@@ -660,7 +677,8 @@ $results |
     Export-Csv -LiteralPath $OutputPath -NoTypeInformation -Encoding UTF8
 
 $failedLookups = @($results | Where-Object { $_.LicenseLookupStatus -eq 'Failed' }).Count
-Write-Host "Exported $($results.Count) user record(s) from $matchingEventCount matching Copilot interaction(s) to: $OutputPath"
+Write-Host "Exported $($results.Count) user record(s) from $matchingEventCount matching agent interaction(s) to: $OutputPath"
+Write-Host "Purview records matched before user and timestamp validation: $matchedAuditRecordCount"
 Write-Host "Purview records without agent identity: $missingAgentIdentityCount"
 if ($failedLookups -gt 0) {
     Write-Warning "$failedLookups user license lookup(s) failed. Review the LicenseLookupStatus and LicenseLookupError columns in the output CSV."
